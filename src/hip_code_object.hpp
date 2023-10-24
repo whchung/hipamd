@@ -32,6 +32,7 @@ THE SOFTWARE.
 #include "hip/hip_runtime_api.h"
 #include "hip_internal.hpp"
 #include "device/device.hpp"
+#include "platform/kernel.hpp"
 #include "platform/program.hpp"
 
 //Forward Declaration for friend usage
@@ -107,7 +108,7 @@ public:
     }
   }
 
-private:
+protected:
   int device_id_;
   FatBinaryInfo* fb_info_;
 
@@ -159,6 +160,48 @@ private:
   //Populated during __hipRegisterManagedVar
   std::vector<Var*> managedVars_;
   std::unordered_map<int, bool> managedVarsDevicePtrInitalized_;
+};
+
+class SubstitutionCOs {
+  amd::Monitor sclock_{"Guards Static Code object", true};
+
+public:
+  class DetailsDynCO : public DynCO {
+   public:
+    DetailsDynCO() {}
+    ~DetailsDynCO() {};
+    FatBinaryInfo* getFatBinaryInfo() { return fb_info_; }
+    std::unordered_map<std::string, Function*> getFunctions() { return functions_; }
+  };
+
+ public:
+  SubstitutionCOs();
+  virtual ~SubstitutionCOs();
+  void loadExternalCodeObjects();
+  auto getExternalSymbolTable() {
+    if (!symbolsTable_.empty()) {
+      CheckDeviceIdMatch();
+    }
+    return symbolsTable_;
+  }
+
+  auto getSubstitutionTable() {
+    return substitutionTable_;
+  }
+
+ private:
+  void parseConfigFile();
+  void CheckDeviceIdMatch() const {
+    if (device_id_ != ihipGetDevice()) {
+      guarantee(false, "Device mismatch from where this module is loaded");
+    }
+  }
+
+  int device_id_;
+  std::unordered_map<std::string, std::string> substitutionTable_{};
+  std::vector<std::string> externalLocations_{};
+  std::vector<DetailsDynCO*> dynamicCOs_{};
+  std::unordered_map<std::string, amd::Kernel*> symbolsTable_{};
 };
 
 }; // namespace hip

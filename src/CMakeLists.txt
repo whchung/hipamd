@@ -66,6 +66,9 @@ else()
   add_library(amdhip64 STATIC $<TARGET_OBJECTS:rocclr>)
 endif()
 
+find_package(yaml-cpp REQUIRED)
+target_link_libraries(amdhip64 PRIVATE yaml-cpp)
+
 set_target_properties(amdhip64 PROPERTIES
   CXX_STANDARD 17
   CXX_STANDARD_REQUIRED ON

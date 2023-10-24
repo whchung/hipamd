@@ -22,10 +22,12 @@
 #include <hip/texture_types.h>
 #include "hip_platform.hpp"
 #include "hip_internal.hpp"
+#include "platform/kernel.hpp"
 #include "platform/program.hpp"
 #include "platform/runtime.hpp"
 
 #include <unordered_map>
+#include <unordered_set>
 
 constexpr unsigned __hipFatMAGIC2 = 0x48495046;  // "HIPF"
 
@@ -278,7 +280,6 @@ hipError_t hipGetSymbolSize(size_t* sizePtr, const void* symbol) {
 
 hipError_t ihipCreateGlobalVarObj(const char* name, hipModule_t hmod, amd::Memory** amd_mem_obj,
                                   hipDeviceptr_t* dptr, size_t* bytes) {
-
   /* Get Device Program pointer*/
   amd::Program* program = as_amd(reinterpret_cast<cl_program>(hmod));
   device::Program* dev_program = program->getDeviceProgram(*hip::getCurrentDevice()->devices()[0]);
@@ -629,6 +630,20 @@ hipError_t ihipLaunchKernel(const void* hostFunction, dim3 gridDim, dim3 blockDi
       globalWorkSizeZ > std::numeric_limits<uint32_t>::max()) {
     return hipErrorInvalidConfiguration;
   }
+
+  static std::unordered_set<device::VirtualDevice*> deviceSet{};
+  amd::HostQueue* queue = hip::getQueue(stream);
+  auto* virtualDevice = queue->vdev();
+
+  if (deviceSet.find(virtualDevice) == deviceSet.end()) {
+    auto symTable = PlatformState::instance().getExternalSymbolTable();
+    virtualDevice->setExternalSymbolTable(symTable);
+
+    auto sybTable = PlatformState::instance().getSubstitutionTable();
+    virtualDevice->setSubstitutionTable(sybTable);
+    deviceSet.insert(virtualDevice);
+  }
+
   return ihipModuleLaunchKernel(
       func, static_cast<uint32_t>(globalWorkSizeX), static_cast<uint32_t>(globalWorkSizeY),
       static_cast<uint32_t>(globalWorkSizeZ), blockDim.x, blockDim.y, blockDim.z, sharedMemBytes,
@@ -718,12 +733,23 @@ void PlatformState::init() {
     hipError_t err = digestFatBinary(it.first, it.second);
     assert(err == hipSuccess);
   }
+
   for (auto& it : statCO_.vars_) {
     it.second->resize_dVar(g_devices.size());
   }
   for (auto& it : statCO_.functions_) {
     it.second->resize_dFunc(g_devices.size());
   }
+
+  // TODO: call to `HIP_INIT_VOID` sets the current device to the
+  // first device. This is currently a work around. Ideally,
+  // `loadExternalCodeObjects` must extract code object for
+  // all devices. Currently, we assume that the user are
+  // going to use only the first device.
+  // Remember, this function call will eventually get moved
+  // to hipGraphs.
+  HIP_INIT_VOID();
+  substitutionCOs_.loadExternalCodeObjects();
 }
 
 hipError_t PlatformState::loadModule(hipModule_t* module, const char* fname, const void* image) {
@@ -845,6 +871,14 @@ hipError_t PlatformState::getDynTexGlobalVar(textureReference* texRef, hipDevice
   *size_ptr = dvar->size();
 
   return hipSuccess;
+}
+
+std::unordered_map<std::string, amd::Kernel*> PlatformState::getExternalSymbolTable() {
+  return substitutionCOs_.getExternalSymbolTable();
+}
+
+std::unordered_map<std::string, std::string> PlatformState::getSubstitutionTable() {
+  return substitutionCOs_.getSubstitutionTable();
 }
 
 hipError_t PlatformState::getDynTexRef(const char* hostVar, hipModule_t hmod,

@@ -19,6 +19,7 @@
  THE SOFTWARE. */
 #pragma once
 
+#include <unordered_map>
 #include "hip_internal.hpp"
 #include "hip_fatbin.hpp"
 #include "device/device.hpp"
@@ -55,6 +56,9 @@ class PlatformState {
   hipError_t getDynTexGlobalVar(textureReference* texRef, hipDeviceptr_t* dev_ptr,
                                 size_t* size_ptr);
 
+  std::unordered_map<std::string, amd::Kernel*> getExternalSymbolTable();
+  std::unordered_map<std::string, std::string> getSubstitutionTable();
+
   /* Singleton instance */
   static PlatformState& instance() {
     if (platform_ == nullptr) {
@@ -90,7 +94,8 @@ class PlatformState {
  private:
   // Dynamic Code Object map, keyin module to get the corresponding object
   std::unordered_map<hipModule_t, hip::DynCO*> dynCO_map_;
-  hip::StatCO statCO_;  // Static Code object var
+  hip::StatCO statCO_;            // Static Code object var
+  hip::SubstitutionCOs substitutionCOs_;  // External Code objects
   bool initialized_{false};
   std::unordered_map<textureReference*, std::pair<hipModule_t, std::string>> texRef_map_;
 };

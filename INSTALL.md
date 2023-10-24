@@ -17,6 +17,24 @@ export HIP_BRANCH=rocm-5.1.x
 ```
 Similiar format for future branches.
 
+## Installing dependencies
+Create an installation directory.
+```bash
+install_path=<path>
+mkdir -p ${install_path}
+```
+
+Install external dependencies.
+```bash
+wget https://github.com/jbeder/yaml-cpp/archive/refs/tags/yaml-cpp-0.7.0.tar.gz
+tar -xvf ./yaml-cpp-0.7.0.tar.gz
+mkdir -p ./yaml-cpp-yaml-cpp-0.7.0/build
+cd ./yaml-cpp-yaml-cpp-0.7.0/build
+cmake .. -DCMAKE_INSTALL_PREFIX=${install_path} -DINSTALL_GTEST=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+make install
+cd ../..
+```
+
 ## Getting the source code
 
 ```bash
@@ -41,11 +59,15 @@ Commands to build hipamd are as following,
 ```bash
 cd "$HIPAMD_DIR"
 mkdir -p build; cd build
-cmake -DHIP_COMMON_DIR=$HIP_DIR -DAMD_OPENCL_PATH=$OPENCL_DIR -DROCCLR_PATH=$ROCCLR_DIR -DCMAKE_PREFIX_PATH="<ROCM_PATH>/" ..
+cmake -DCMAKE_INSTALL_PREFIX=${install_path} \
+-DHIP_COMMON_DIR=$HIP_DIR \
+-DAMD_OPENCL_PATH=$OPENCL_DIR \
+-DROCCLR_PATH=$ROCCLR_DIR \
+-DCMAKE_PREFIX_PATH="<ROCM_PATH>/" ..
 make -j$(nproc)
 sudo make install
 ```
-
+<!---
 Please note, HIP_COMMON_DIR looks for hip common ([HIP](https://github.com/ROCm-Developer-Tools/HIP/)) source codes.
 By default, release version of hipamd is built. hip will be installed to the default path <ROCM_PATH>/hip
 
@@ -57,6 +79,12 @@ cmake -DHIP_COMMON_DIR=$HIP_DIR -DAMD_OPENCL_PATH=$OPENCL_DIR -DROCCLR_PATH=$ROC
 make -j$(nproc)
 sudo make install
 ```
+--->
 
-After installation, make sure HIP_PATH is pointed to the path where hip is installed.
+After installation, make sure HIP_PATH is pointed to the path where hip is installed. For example,
+
+```bash
+echo "export HIP_PATH=${install_path}" >> ~/.bashrc
+echo "export HIP_PATH=${install_path}" >> ~/.zshrc
+```
 
