@@ -19,6 +19,7 @@
  THE SOFTWARE. */
 
 #include "hip_graph_internal.hpp"
+#include "hip_graph_fuse_recorder.hpp"
 #include "platform/command.hpp"
 #include "hip_conversions.hpp"
 #include "hip_platform.hpp"
@@ -1102,6 +1103,12 @@ hipError_t ihipGraphInstantiate(hipGraphExec_t* pGraphExec, hipGraph_t graph) {
   clonedGraph->LevelOrder(levelOrder);
   clonedGraph->GetUserObjs(graphExeUserObj);
   *pGraphExec = new hipGraphExec(levelOrder, parallelLists, nodeWaitLists, clonedNodes, graphExeUserObj);
+
+  if (hip::GraphFuseRecorder::isRecordingOn()) {
+    hip::GraphFuseRecorder recorder(clonedGraph);
+    recorder.run();
+  }
+
   if (*pGraphExec != nullptr) {
     return (*pGraphExec)->Init();
   } else {
