@@ -59,7 +59,12 @@ namespace hip {
 bool GraphFuseRecorder::isRecordingStateQueried_{false};
 bool GraphFuseRecorder::isRecordingSwitchedOn_{false};
 std::string GraphFuseRecorder::tmpDirName_{};
-size_t GraphFuseRecorder::imageCounter_{0};
+std::unordered_set<GraphFuseRecorder::ImageHandle, GraphFuseRecorder::ImageHash>
+    GraphFuseRecorder::imageCache_{};
+size_t GraphFuseRecorder::instanceCounter_{0};
+
+GraphFuseRecorder::GraphFuseRecorder(hipGraph_t graph)
+    : graph_(graph), instanceId_(instanceCounter_++) {}
 
 bool GraphFuseRecorder::isInputOk() {
   auto* env = getenv("AMD_FUSION_RECORDING");
@@ -128,7 +133,7 @@ void GraphFuseRecorder::run() {
   }
 
   std::vector<KernelImageMapType> kernelsMaps{};
-  for (auto& group : fusionGroups) {
+  for (auto& group : fusionGroups_) {
     auto map = collectImages(group);
     kernelsMaps.push_back(map);
   }
@@ -148,63 +153,63 @@ bool GraphFuseRecorder::findCandidates(const std::vector<Node>& nodes) {
     }
   }
 
-  fusionGroups.push_back(std::vector<Node>());
-  fusedExecutionOrder.push_back(std::vector<size_t>());
+  fusionGroups_.push_back(std::vector<Node>());
+  fusedExecutionOrder_.push_back(std::vector<size_t>());
   dim3 referenceBlockSize{};
   bool isRecording{true};
   for (size_t i = 0; i < nodes.size(); ++i) {
     auto& node = nodes[i];
     const auto type = node->GetType();
     const auto outDegree = node->GetOutDegree();
-    auto& group = fusionGroups.back();
-    auto& executionSequence = fusedExecutionOrder.back();
 
     if (type == hipGraphNodeTypeKernel) {
+      if (!isRecording) {
+        append(fusionGroups_);
+        append(fusedExecutionOrder_);
+      }
       isRecording = true;
 
       auto params = getKernelNodeParams(node);
       auto* kernel = getDeviceKernel(params);
 
-      if (group.empty()) {
+      if (fusionGroups_.back().empty()) {
         referenceBlockSize = params.blockDim;
       }
 
       const bool isBlockSizeEqual = equal(referenceBlockSize, params.blockDim);
-      if (isBlockSizeEqual) {
-        group.push_back(node);
-        executionSequence.push_back(i);
-      } else {
-        append(fusionGroups);
-        fusionGroups.back().push_back(node);
-
-        append(fusedExecutionOrder);
-        fusedExecutionOrder.back().push_back(i);
+      if (!isBlockSizeEqual) {
+        append(fusionGroups_);
+        append(fusedExecutionOrder_);
       }
+      fusionGroups_.back().push_back(node);
+      fusedExecutionOrder_.back().push_back(i);
     }
 
     if (type != hipGraphNodeTypeKernel) {
-      if (isRecording) {
-        append(fusionGroups);
-      }
       isRecording = false;
 
-      append(fusedExecutionOrder);
-      fusedExecutionOrder.back().push_back(i);
+      append(fusedExecutionOrder_);
+      fusedExecutionOrder_.back().push_back(i);
       continue;
     }
   }
 
-  fusionGroups.erase(std::remove_if(fusionGroups.begin(), fusionGroups.end(),
-                                    [](auto& group) { return group.size() <= 1; }),
-                     fusionGroups.end());
+  fusionGroups_.erase(std::remove_if(fusionGroups_.begin(), fusionGroups_.end(),
+                                     [](auto& group) { return group.size() <= 1; }),
+                      fusionGroups_.end());
 
-  if (fusionGroups.empty()) {
+  if (fusionGroups_.empty()) {
     ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "could not find fusion candidates");
     return false;
   }
 
+  fusedExecutionOrder_.erase(
+      std::remove_if(fusedExecutionOrder_.begin(), fusedExecutionOrder_.end(),
+                     [](auto& sequence) { return sequence.empty(); }),
+      fusedExecutionOrder_.end());
+
   size_t nodeCounter{0};
-  std::for_each(fusedExecutionOrder.begin(), fusedExecutionOrder.end(),
+  std::for_each(fusedExecutionOrder_.begin(), fusedExecutionOrder_.end(),
                 [&nodeCounter](auto& item) { nodeCounter += item.size(); });
   guarantee(nodeCounter == nodes.size(), "failed to process execution sequences");
   return true;
@@ -231,12 +236,13 @@ GraphFuseRecorder::KernelImageMapType GraphFuseRecorder::collectImages(
     handle.imageSize_ = static_cast<size_t>(imageSize);
     handle.isAllocated_ = isAllocated;
 
-    if (imageMap.find(handle) == imageMap.end()) {
-      handle.fileName = generateImagePath();
-      imageMap.insert(handle);
+    if (imageCache_.find(handle) == imageCache_.end()) {
+      const auto imageId = imageCache_.size();
+      handle.fileName_ = generateImagePath(imageId);
+      imageCache_.insert(handle);
       saveImageToDisk(handle);
     }
-    auto imageName = imageMap.find(handle)->fileName;
+    auto imageName = imageCache_.find(handle)->fileName_;
     map.push_back({kernelName, imageName});
   }
   return map;
@@ -245,30 +251,37 @@ GraphFuseRecorder::KernelImageMapType GraphFuseRecorder::collectImages(
 void GraphFuseRecorder::saveImageToDisk(ImageHandle& imageHandle) {
   if (imageHandle.imageSize_ > 0) {
     auto iamgeFile =
-        std::fstream(imageHandle.fileName.c_str(), std::ios_base::out | std::ios_base::binary);
+        std::fstream(imageHandle.fileName_.c_str(), std::ios_base::out | std::ios_base::binary);
     if (iamgeFile) {
       iamgeFile.write(imageHandle.image_, imageHandle.imageSize_);
     } else {
       std::stringstream msg;
-      msg << "failed to write image file to `" << imageHandle.fileName.c_str() << "`";
+      msg << "failed to write image file to `" << imageHandle.fileName_.c_str() << "`";
       ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, msg.str().c_str());
     }
   }
 }
 
 void GraphFuseRecorder::saveFusionConfig(std::vector<KernelImageMapType>& kernelsMaps) {
+  const auto currentDeviceId = ihipGetDevice();
+  hipDeviceProp_t props;
+  hipGetDeviceProperties(&props, currentDeviceId);
+
   YAML::Emitter out;
-  out << YAML::BeginMap << YAML::Key << "executionOrder" << YAML::Value << YAML::BeginSeq;
-  for (auto& sequence : fusedExecutionOrder) {
+  out << YAML::BeginMap;
+  out << YAML::Key << "device" << YAML::Value << std::string(props.gcnArchName);
+
+  out << YAML::Key << "executionOrder" << YAML::Value << YAML::BeginSeq;
+  for (auto& sequence : fusedExecutionOrder_) {
     out << YAML::Flow << YAML::BeginSeq;
     for (auto& item : sequence) {
       out << item;
     }
     out << YAML::EndSeq;
   }
-  out << YAML::EndSeq << YAML::EndMap;
+  out << YAML::EndSeq;
 
-  out << YAML::BeginMap << YAML::Key << "groups" << YAML::Value << YAML::BeginSeq;
+  out << YAML::Key << "groups" << YAML::Value << YAML::BeginSeq;
   for (size_t id = 0; id < kernelsMaps.size(); ++id) {
     std::string groupName = std::string("group") + std::to_string(id);
     out << YAML::BeginMap << YAML::Key << groupName << YAML::Value << YAML::BeginSeq;
@@ -278,11 +291,13 @@ void GraphFuseRecorder::saveFusionConfig(std::vector<KernelImageMapType>& kernel
       out << YAML::Key << "location" << YAML::Value << imageLocation;
       out << YAML::EndMap;
     }
-    out << YAML::EndSeq;
+    out << YAML::EndSeq << YAML::EndMap;
   }
-  out << YAML::EndSeq << YAML::EndMap;
+  out << YAML::EndSeq;
+  out << YAML::EndMap;
 
-  auto configPath = generateFilePath("config.yaml");
+  auto fileName = std::string("config") + std::to_string(instanceId_) + std::string(".yaml");
+  auto configPath = generateFilePath(fileName);
   auto configFile = std::fstream(configPath.c_str(), std::ios_base::out);
   if (configFile) {
     configFile << out.c_str() << "\n";
@@ -298,9 +313,8 @@ std::string GraphFuseRecorder::generateFilePath(const std::string& name) {
   return std::filesystem::weakly_canonical(path).string();
 }
 
-std::string GraphFuseRecorder::generateImagePath() {
-  auto name = std::string("img") + std::to_string(this->imageCounter_) + std::string(".bin");
-  ++(this->imageCounter_);
+std::string GraphFuseRecorder::generateImagePath(size_t imageId) {
+  auto name = std::string("img") + std::to_string(imageId) + std::string(".bin");
   return generateFilePath(name);
 }
 }  // namespace hip

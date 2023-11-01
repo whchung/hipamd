@@ -14,9 +14,9 @@ class GraphFuseRecorder {
   amd::Monitor fclock_{"Guards Graph Fuse-Recorder object", true};
 
  public:
-  GraphFuseRecorder(hipGraph_t graph) : graph_(graph) {}
+  // GraphFuseRecorder(hipGraph_t graph) : graph_(graph) {}
+  GraphFuseRecorder(hipGraph_t graph);
   void run();
-
   static bool isRecordingOn();
 
  private:
@@ -25,7 +25,7 @@ class GraphFuseRecorder {
     char* image_{};
     size_t imageSize_{};
     bool isAllocated_{};
-    std::string fileName{};
+    std::string fileName_{};
     bool operator==(const ImageHandle& other) const {
       return (this->image_ == other.image_) && (imageSize_ == other.imageSize_);
     }
@@ -50,16 +50,17 @@ class GraphFuseRecorder {
   void saveImageToDisk(ImageHandle& imageHandle);
   void saveFusionConfig(std::vector<KernelImageMapType>& kernelsMaps);
   std::string generateFilePath(const std::string& name);
-  std::string generateImagePath();
+  std::string generateImagePath(size_t imageId);
 
   hipGraph_t graph_;
-  std::vector<std::vector<Node>> fusionGroups{};
-  std::vector<std::vector<size_t>> fusedExecutionOrder{};
-  std::unordered_set<ImageHandle, ImageHash> imageMap{};
+  std::vector<std::vector<Node>> fusionGroups_{};
+  std::vector<std::vector<size_t>> fusedExecutionOrder_{};
+  size_t instanceId_{};
 
   static bool isRecordingStateQueried_;
   static bool isRecordingSwitchedOn_;
   static std::string tmpDirName_;
-  static size_t imageCounter_;
+  static std::unordered_set<ImageHandle, ImageHash> imageCache_;
+  static size_t instanceCounter_;
 };
 }  // namespace hip
