@@ -20,7 +20,7 @@ class GraphFuseRecorder {
   static bool isRecordingOn();
 
  private:
-  using KernelImageMapType = std::vector<std::pair<std::string, std::string>>;
+  using KernelImageMapType = std::vector<std::tuple<std::string, std::string, dim3>>;
   struct ImageHandle {
     char* image_{};
     size_t imageSize_{};

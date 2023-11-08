@@ -224,7 +224,8 @@ GraphFuseRecorder::KernelImageMapType GraphFuseRecorder::collectImages(
   KernelImageMapType map{};
   for (size_t i = 0; i < group.size(); ++i) {
     const auto& node = group[i];
-    auto* kernel = getDeviceKernel(node);
+    auto params = getKernelNodeParams(node);
+    auto* kernel = getDeviceKernel(params);
     auto kernelName = kernel->name();
     rtrim(kernelName);
 
@@ -243,7 +244,7 @@ GraphFuseRecorder::KernelImageMapType GraphFuseRecorder::collectImages(
       saveImageToDisk(handle);
     }
     auto imageName = imageCache_.find(handle)->fileName_;
-    map.push_back({kernelName, imageName});
+    map.push_back({kernelName, imageName, params.gridDim});
   }
   return map;
 }
@@ -285,10 +286,13 @@ void GraphFuseRecorder::saveFusionConfig(std::vector<KernelImageMapType>& kernel
   for (size_t id = 0; id < kernelsMaps.size(); ++id) {
     std::string groupName = std::string("group") + std::to_string(id);
     out << YAML::BeginMap << YAML::Key << groupName << YAML::Value << YAML::BeginSeq;
-    for (auto& [kernelName, imageLocation] : kernelsMaps[id]) {
+    for (auto& [kernelName, imageLocation, gridDim] : kernelsMaps[id]) {
       out << YAML::BeginMap;
       out << YAML::Key << "name" << YAML::Value << kernelName;
       out << YAML::Key << "location" << YAML::Value << imageLocation;
+      out << YAML::Key << "gridDim" << YAML::Value << YAML::Flow
+          << YAML::BeginSeq << gridDim.x << gridDim.y << gridDim.z
+          << YAML::EndSeq;
       out << YAML::EndMap;
     }
     out << YAML::EndSeq << YAML::EndMap;
