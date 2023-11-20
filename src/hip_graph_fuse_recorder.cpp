@@ -71,8 +71,8 @@ bool GraphFuseRecorder::isInputOk() {
 
   try {
     auto config = YAML::LoadFile(configPathName);
-    tmpDirName_ = config["tmp_dir_path"].as<std::string>();
-    std::filesystem::path dirPath(tmpDirName_);
+    auto tmpDirName = config["tmp_dir_path"].as<std::string>();
+    std::filesystem::path dirPath(tmpDirName);
     if (!std::filesystem::exists(dirPath)) {
       auto isOk = std::filesystem::create_directories(dirPath);
       if (!isOk) {
@@ -80,7 +80,9 @@ bool GraphFuseRecorder::isInputOk() {
         return false;
       }
     }
+    dirPath /= "recording";
     std::filesystem::create_directories(dirPath);
+    GraphFuseRecorder::tmpDirName_ = dirPath.string();
   } catch (const YAML::ParserException& ex) {
     ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "error while parsing fusion config: %s", ex.what());
     return false;
@@ -132,12 +134,12 @@ void GraphFuseRecorder::run() {
     return;
   }
 
-  std::vector<KernelImageMapType> kernelsMaps{};
+  std::vector<KernelDescriptions> groupDescriptions{};
   for (auto& group : fusionGroups_) {
-    auto map = collectImages(group);
-    kernelsMaps.push_back(map);
+    auto description = collectImages(group);
+    groupDescriptions.push_back(description);
   }
-  saveFusionConfig(kernelsMaps);
+  saveFusionConfig(groupDescriptions);
 }
 
 bool GraphFuseRecorder::findCandidates(const std::vector<Node>& nodes) {
@@ -169,7 +171,7 @@ bool GraphFuseRecorder::findCandidates(const std::vector<Node>& nodes) {
       }
       isRecording = true;
 
-      auto params = getKernelNodeParams(node);
+      auto params = GraphFuseRecorder::getKernelNodeParams(node);
       auto* kernel = GraphFuseRecorder::getDeviceKernel(params);
 
       if (fusionGroups_.back().empty()) {
@@ -215,19 +217,27 @@ bool GraphFuseRecorder::findCandidates(const std::vector<Node>& nodes) {
   return true;
 }
 
-GraphFuseRecorder::KernelImageMapType GraphFuseRecorder::collectImages(
+GraphFuseRecorder::KernelDescriptions GraphFuseRecorder::collectImages(
     const std::vector<Node>& group) {
   const auto& devices = hip::getCurrentDevice()->devices();
   const auto currentDeviceId = ihipGetDevice();
   auto device = devices[currentDeviceId];
 
-  KernelImageMapType map{};
+  KernelDescriptions descriptions{};
   for (size_t i = 0; i < group.size(); ++i) {
+    KernelDescription descr{};
+
     const auto& node = group[i];
-    auto params = getKernelNodeParams(node);
-    auto* kernel = getDeviceKernel(params);
-    auto kernelName = kernel->name();
-    rtrim(kernelName);
+    auto params = GraphFuseRecorder::getKernelNodeParams(node);
+    descr.gridDim = params.gridDim;
+
+    auto* kernel = GraphFuseRecorder::getDeviceKernel(params);
+    descr.name = kernel->name();
+    rtrim(descr.name);
+
+    for (auto& argDescriptor : kernel->signature().parameters()) {
+      descr.argsSizes.push_back(argDescriptor.size_);
+    }
 
     auto& program = kernel->program();
     auto [image, imageSize, isAllocated] = program.binary(*device);
@@ -243,10 +253,11 @@ GraphFuseRecorder::KernelImageMapType GraphFuseRecorder::collectImages(
       imageCache_.insert(handle);
       saveImageToDisk(handle);
     }
-    auto imageName = imageCache_.find(handle)->fileName_;
-    map.push_back({kernelName, imageName, params.gridDim});
+    descr.location = imageCache_.find(handle)->fileName_;
+
+    descriptions.push_back(descr);
   }
-  return map;
+  return descriptions;
 }
 
 void GraphFuseRecorder::saveImageToDisk(ImageHandle& imageHandle) {
@@ -263,7 +274,7 @@ void GraphFuseRecorder::saveImageToDisk(ImageHandle& imageHandle) {
   }
 }
 
-void GraphFuseRecorder::saveFusionConfig(std::vector<KernelImageMapType>& kernelsMaps) {
+void GraphFuseRecorder::saveFusionConfig(std::vector<KernelDescriptions>& groupDescriptions) {
   const auto currentDeviceId = ihipGetDevice();
   hipDeviceProp_t props;
   auto status = hipGetDeviceProperties(&props, currentDeviceId);
@@ -286,16 +297,24 @@ void GraphFuseRecorder::saveFusionConfig(std::vector<KernelImageMapType>& kernel
   out << YAML::EndSeq;
 
   out << YAML::Key << "groups" << YAML::Value << YAML::BeginSeq;
-  for (size_t id = 0; id < kernelsMaps.size(); ++id) {
+  for (size_t id = 0; id < groupDescriptions.size(); ++id) {
     std::string groupName = std::string("group") + std::to_string(id);
     out << YAML::BeginMap << YAML::Key << groupName << YAML::Value << YAML::BeginSeq;
-    for (auto& [kernelName, imageLocation, gridDim] : kernelsMaps[id]) {
+    const auto& descriptions = groupDescriptions[id];
+    for (const auto& description : descriptions) {
       out << YAML::BeginMap;
-      out << YAML::Key << "name" << YAML::Value << kernelName;
-      out << YAML::Key << "location" << YAML::Value << imageLocation;
-      out << YAML::Key << "gridDim" << YAML::Value << YAML::Flow
-          << YAML::BeginSeq << gridDim.x << gridDim.y << gridDim.z
+      out << YAML::Key << "name" << YAML::Value << description.name;
+      out << YAML::Key << "location" << YAML::Value << description.location;
+      out << YAML::Key << "gridDim" << YAML::Value << YAML::Flow << YAML::BeginSeq
+          << description.gridDim.x << description.gridDim.y << description.gridDim.z
           << YAML::EndSeq;
+
+      out << YAML::Key << "argSizes" << YAML::Value << YAML::Flow << YAML::BeginSeq;
+      for (const auto argSize : description.argsSizes) {
+        out << argSize;
+      }
+      out << YAML::EndSeq;
+
       out << YAML::EndMap;
     }
     out << YAML::EndSeq << YAML::EndMap;

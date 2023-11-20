@@ -22,7 +22,6 @@ class GraphFuseRecorder {
   static amd::Kernel* getDeviceKernel(hipGraphNode* node);
 
  private:
-  using KernelImageMapType = std::vector<std::tuple<std::string, std::string, dim3>>;
   struct ImageHandle {
     char* image_{};
     size_t imageSize_{};
@@ -46,11 +45,20 @@ class GraphFuseRecorder {
     }
   };
 
+  struct KernelDescription {
+    std::string name{};
+    std::string location{};
+    dim3 gridDim{};
+    std::vector<size_t> argsSizes{};
+  };
+  using KernelDescriptions = std::vector<KernelDescription>;
+
+
   static bool isInputOk();
   bool findCandidates(const std::vector<Node>& nodes);
-  KernelImageMapType collectImages(const std::vector<Node>& nodes);
+  KernelDescriptions collectImages(const std::vector<Node>& nodes);
   void saveImageToDisk(ImageHandle& imageHandle);
-  void saveFusionConfig(std::vector<KernelImageMapType>& kernelsMaps);
+  void saveFusionConfig(std::vector<KernelDescriptions>& groupDescriptions);
   std::string generateFilePath(const std::string& name);
   std::string generateImagePath(size_t imageId);
 
