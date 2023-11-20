@@ -25,28 +25,6 @@ bool enabled(const std::string& value) {
   return false;
 }
 
-hipKernelNodeParams getKernelNodeParams(hipGraphNode* node) {
-  auto* kernelNode = dynamic_cast<hipGraphKernelNode*>(const_cast<hipGraphNode*>(node));
-  guarantee(kernelNode != nullptr, "failed to convert a graph node to `hipGraphKernelNode`");
-  hipKernelNodeParams kernelParams;
-  kernelNode->GetParams(&kernelParams);
-  return kernelParams;
-}
-
-amd::Kernel* getDeviceKernel(hipKernelNodeParams& nodeParams) {
-  hipFunction_t hipFunc = hipGraphKernelNode::getFunc(nodeParams, ihipGetDevice());
-  auto* deviceFunc = hip::DeviceFunc::asFunction(hipFunc);
-  guarantee(deviceFunc != nullptr, "failed to retrieve the kernel of a graph node");
-
-  auto* kernel = deviceFunc->kernel();
-  return kernel;
-}
-
-amd::Kernel* getDeviceKernel(hipGraphNode* node) {
-  auto nodeParams = getKernelNodeParams(node);
-  return getDeviceKernel(nodeParams);
-}
-
 bool equal(const dim3& one, const dim3& two) {
   return (one.x == two.x) && (one.y == two.y) && (one.z == two.z);
 }
@@ -125,6 +103,28 @@ bool GraphFuseRecorder::isRecordingOn() {
   return isRecordingSwitchedOn_;
 }
 
+hipKernelNodeParams GraphFuseRecorder::getKernelNodeParams(hipGraphNode* node) {
+  auto* kernelNode = dynamic_cast<hipGraphKernelNode*>(const_cast<hipGraphNode*>(node));
+  guarantee(kernelNode != nullptr, "failed to convert a graph node to `hipGraphKernelNode`");
+  hipKernelNodeParams kernelParams;
+  kernelNode->GetParams(&kernelParams);
+  return kernelParams;
+}
+
+amd::Kernel* GraphFuseRecorder::getDeviceKernel(hipKernelNodeParams& nodeParams) {
+  hipFunction_t hipFunc = hipGraphKernelNode::getFunc(nodeParams, ihipGetDevice());
+  auto* deviceFunc = hip::DeviceFunc::asFunction(hipFunc);
+  guarantee(deviceFunc != nullptr, "failed to retrieve the kernel of a graph node");
+
+  auto* kernel = deviceFunc->kernel();
+  return kernel;
+}
+
+amd::Kernel* GraphFuseRecorder::getDeviceKernel(hipGraphNode* node) {
+  auto nodeParams = GraphFuseRecorder::getKernelNodeParams(node);
+  return GraphFuseRecorder::getDeviceKernel(nodeParams);
+}
+
 void GraphFuseRecorder::run() {
   amd::ScopedLock lock(fclock_);
   const auto& nodes = graph_->GetNodes();
@@ -170,7 +170,7 @@ bool GraphFuseRecorder::findCandidates(const std::vector<Node>& nodes) {
       isRecording = true;
 
       auto params = getKernelNodeParams(node);
-      auto* kernel = getDeviceKernel(params);
+      auto* kernel = GraphFuseRecorder::getDeviceKernel(params);
 
       if (fusionGroups_.back().empty()) {
         referenceBlockSize = params.blockDim;
@@ -266,7 +266,10 @@ void GraphFuseRecorder::saveImageToDisk(ImageHandle& imageHandle) {
 void GraphFuseRecorder::saveFusionConfig(std::vector<KernelImageMapType>& kernelsMaps) {
   const auto currentDeviceId = ihipGetDevice();
   hipDeviceProp_t props;
-  hipGetDeviceProperties(&props, currentDeviceId);
+  auto status = hipGetDeviceProperties(&props, currentDeviceId);
+  if (status != hipSuccess) {
+    ClPrint(amd::LOG_INFO, amd::LOG_ALWAYS, "failed to call `hipGetDeviceProperties`");
+  }
 
   YAML::Emitter out;
   out << YAML::BeginMap;

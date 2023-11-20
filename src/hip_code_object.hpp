@@ -162,10 +162,10 @@ private:
   std::unordered_map<int, bool> managedVarsDevicePtrInitalized_;
 };
 
-class SubstitutionCOs {
-  amd::Monitor sclock_{"Guards Static Code object", true};
 
-public:
+class ExternalCOs {
+  amd::Monitor sclock_{"Guards External Code objects", true};
+  public:
   class DetailsDynCO : public DynCO {
    public:
     DetailsDynCO() {}
@@ -174,36 +174,18 @@ public:
     std::unordered_map<std::string, Function*> getFunctions() { return functions_; }
   };
 
- public:
-  SubstitutionCOs();
-  virtual ~SubstitutionCOs();
-  void loadExternalCodeObjects();
-  auto getExternalSymbolTable() {
-    if (!symbolsTable_.empty()) {
-      CheckDeviceIdMatch();
-    }
+  ExternalCOs();
+  virtual ~ExternalCOs();
+  void load(const std::string& symbolName, const std::string& imagePath);
+  auto getExternalTable() {
     return symbolsTable_;
   }
 
-  auto getSubstitutionTable() {
-    return substitutionTable_;
-  }
-
- private:
-  void parseConfigFile();
-  void CheckDeviceIdMatch() const {
-    if (device_id_ != ihipGetDevice()) {
-      guarantee(false, "Device mismatch from where this module is loaded");
-    }
-  }
-
+  private:
   int device_id_;
-  std::unordered_map<std::string, std::string> substitutionTable_{};
-  std::vector<std::string> externalLocations_{};
-  std::vector<DetailsDynCO*> dynamicCOs_{};
+  std::unordered_map<std::string, DetailsDynCO*> externalLocations_{};
   std::unordered_map<std::string, amd::Kernel*> symbolsTable_{};
 };
-
 }; // namespace hip
 
 #endif /* HIP_CODE_OBJECT_HPP */

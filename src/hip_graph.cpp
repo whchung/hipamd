@@ -20,6 +20,7 @@
 
 #include "hip_graph_internal.hpp"
 #include "hip_graph_fuse_recorder.hpp"
+#include "hip_graph_modifier.hpp"
 #include "platform/command.hpp"
 #include "hip_conversions.hpp"
 #include "hip_platform.hpp"
@@ -1090,6 +1091,12 @@ hipError_t ihipGraphInstantiate(hipGraphExec_t* pGraphExec, hipGraph_t graph) {
   if (pGraphExec == nullptr || graph == nullptr) {
     HIP_RETURN(hipErrorInvalidValue);
   }
+
+  if (hip::GraphModifier::isSubstitutionOn()) {
+    hip::GraphModifier modifier(graph);
+    modifier.run();
+  }
+
   std::unordered_map<Node, Node> clonedNodes;
   hipGraph_t clonedGraph = graph->clone(clonedNodes);
   if (clonedGraph == nullptr) {

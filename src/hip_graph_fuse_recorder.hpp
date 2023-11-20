@@ -14,10 +14,12 @@ class GraphFuseRecorder {
   amd::Monitor fclock_{"Guards Graph Fuse-Recorder object", true};
 
  public:
-  // GraphFuseRecorder(hipGraph_t graph) : graph_(graph) {}
   GraphFuseRecorder(hipGraph_t graph);
   void run();
   static bool isRecordingOn();
+  static hipKernelNodeParams getKernelNodeParams(hipGraphNode* node);
+  static amd::Kernel* getDeviceKernel(hipKernelNodeParams& nodeParams);
+  static amd::Kernel* getDeviceKernel(hipGraphNode* node);
 
  private:
   using KernelImageMapType = std::vector<std::tuple<std::string, std::string, dim3>>;

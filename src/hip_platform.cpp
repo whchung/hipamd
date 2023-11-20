@@ -20,11 +20,13 @@
 
 #include <hip/hip_runtime.h>
 #include <hip/texture_types.h>
+#include "hip/hip_runtime_api.h"
 #include "hip_platform.hpp"
 #include "hip_internal.hpp"
 #include "platform/kernel.hpp"
 #include "platform/program.hpp"
 #include "platform/runtime.hpp"
+#include "utils/debug.hpp"
 
 #include <unordered_map>
 #include <unordered_set>
@@ -635,15 +637,6 @@ hipError_t ihipLaunchKernel(const void* hostFunction, dim3 gridDim, dim3 blockDi
   amd::HostQueue* queue = hip::getQueue(stream);
   auto* virtualDevice = queue->vdev();
 
-  if (deviceSet.find(virtualDevice) == deviceSet.end()) {
-    auto symTable = PlatformState::instance().getExternalSymbolTable();
-    virtualDevice->setExternalSymbolTable(symTable);
-
-    auto sybTable = PlatformState::instance().getSubstitutionTable();
-    virtualDevice->setSubstitutionTable(sybTable);
-    deviceSet.insert(virtualDevice);
-  }
-
   return ihipModuleLaunchKernel(
       func, static_cast<uint32_t>(globalWorkSizeX), static_cast<uint32_t>(globalWorkSizeY),
       static_cast<uint32_t>(globalWorkSizeZ), blockDim.x, blockDim.y, blockDim.z, sharedMemBytes,
@@ -723,6 +716,13 @@ extern "C"
   return (unsigned short)__convert_float_to_half(f);
 }
 
+PlatformState::~PlatformState() {
+  auto status = hipFree(semaphore_);
+  if (status != hipSuccess) {
+    ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "failed to delete semaphore");
+  }
+}
+
 void PlatformState::init() {
   amd::ScopedLock lock(lock_);
   if (initialized_ || g_devices.empty()) {
@@ -740,16 +740,6 @@ void PlatformState::init() {
   for (auto& it : statCO_.functions_) {
     it.second->resize_dFunc(g_devices.size());
   }
-
-  // TODO: call to `HIP_INIT_VOID` sets the current device to the
-  // first device. This is currently a work around. Ideally,
-  // `loadExternalCodeObjects` must extract code object for
-  // all devices. Currently, we assume that the user are
-  // going to use only the first device.
-  // Remember, this function call will eventually get moved
-  // to hipGraphs.
-  HIP_INIT_VOID();
-  substitutionCOs_.loadExternalCodeObjects();
 }
 
 hipError_t PlatformState::loadModule(hipModule_t* module, const char* fname, const void* image) {
@@ -873,12 +863,31 @@ hipError_t PlatformState::getDynTexGlobalVar(textureReference* texRef, hipDevice
   return hipSuccess;
 }
 
-std::unordered_map<std::string, amd::Kernel*> PlatformState::getExternalSymbolTable() {
-  return substitutionCOs_.getExternalSymbolTable();
+void PlatformState::loadExternalSymbol(const std::string& symbolName, const std::string imagePath) {
+  externalCOs_.load(symbolName, imagePath);
 }
 
-std::unordered_map<std::string, std::string> PlatformState::getSubstitutionTable() {
-  return substitutionCOs_.getSubstitutionTable();
+std::unordered_map<std::string, amd::Kernel*> PlatformState::getExternalSymbolTable() {
+  return externalCOs_.getExternalTable();
+}
+
+void PlatformState::initSemaphore() {
+  auto status = hipMalloc(&semaphore_, sizeof(unsigned int));
+  if (status != hipSuccess) {
+    ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "failed to allocate semaphore on the current device");
+    return;
+  }
+  status = hipMemset(semaphore_, 0, sizeof(unsigned int));
+  if (status != hipSuccess) {
+    ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "failed to set semaphore value on the current device");
+    return;
+  }
+  ClPrint(amd::LOG_INFO, amd::LOG_ALWAYS, "semaphore is set");
+}
+
+unsigned int* PlatformState::getSemaphore() {
+  guarantee(semaphore_ != nullptr, "semaphore must be initialized");
+  return semaphore_;
 }
 
 hipError_t PlatformState::getDynTexRef(const char* hostVar, hipModule_t hmod,

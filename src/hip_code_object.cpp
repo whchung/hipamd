@@ -862,138 +862,56 @@ hipError_t StatCO::initStatManagedVarDevicePtr(int deviceId) {
   return err;
 }
 
-SubstitutionCOs::SubstitutionCOs() : device_id_(ihipGetDevice()) {
-  parseConfigFile();
-}
 
-SubstitutionCOs::~SubstitutionCOs() {
-  for (auto* item : dynamicCOs_) {
-    delete item;
-  }
-  dynamicCOs_.clear();
-}
-
-void SubstitutionCOs::parseConfigFile() {
-  static char *config_path = getenv("AMD_FUSION_CONFIG");
-  if (config_path == nullptr) {
-    return;
-  }
-
-  {
-    auto config_file = std::fstream(config_path, std::ios_base::in);
-    if (config_file.fail()) {
-      ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "cannot open fusion config file: %s", config_path);
-      return;
-    }
-  }
-
-  try {
-    auto config = YAML::LoadFile(config_path);
-    auto locations = config["external_locations"];
-
-    for (std::size_t index = 0; index < locations.size(); ++index) {
-      {
-        auto objectFilePath = locations[index].as<std::string>();
-        auto file = std::fstream(objectFilePath, std::ios_base::in);
-        if (file.fail()) {
-          ClPrint(amd::LOG_ERROR,
-                  amd::LOG_ALWAYS,
-                  "cannot open external library: %s.",
-                  objectFilePath.c_str());
-          continue;
-        }
-        else {
-          externalLocations_.push_back(objectFilePath);
-        }
-      }
-    }
-
-    if (externalLocations_.empty()) {
-      ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "no valid extrernal locations are provided.");
-      return;
-    }
-
-    auto substitutions = config["substitutions"];
-    for (std::size_t index = 0; index < substitutions.size(); ++index) {
-      auto substitution = substitutions[index];
-
-      // TODO: check no repeating keys and values are in the yaml file
-      auto what = substitution["what"].as<std::string>();
-      auto with = substitution["with"].as<std::string>();
-      substitutionTable_.insert({what, with});
-    }
-  }
-  catch(const YAML::ParserException& ex) {
-    ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "error while parsing fusion config: %s", ex.what());
-    return;
-  }
-  catch(const std::runtime_error& ex) {
-    ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "error while parsing fusion config: %s", ex.what());
-    return;
-  }
-
-  return;
-}
-
-void SubstitutionCOs::loadExternalCodeObjects() {
+ExternalCOs::ExternalCOs() : device_id_(ihipGetDevice()) {}
+ExternalCOs::~ExternalCOs() {
   amd::ScopedLock lock(sclock_);
+  for (auto& [location, dynamicCO] : externalLocations_) {
+    delete dynamicCO;
+  }
+  externalLocations_.clear();
+}
 
-  if (externalLocations_.empty() || substitutionTable_.empty()) {
+void ExternalCOs::load(const std::string& symbolName, const std::string& imagePath) {
+  amd::ScopedLock lock(sclock_);
+  if (symbolsTable_.find(symbolName) != symbolsTable_.end()) {
+    ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "symbol %s has already been loaded", symbolName.c_str());
     return;
   }
 
-  for (auto& libraryPath : externalLocations_) {
-    dynamicCOs_.push_back(new DetailsDynCO());
-    auto* detailsDynCO = dynamicCOs_.back();
-    auto status = detailsDynCO->loadCodeObject(libraryPath.c_str());
-    if (status == hipSuccess) {
-      ClPrint(amd::LOG_INFO, amd::LOG_ALWAYS, "loaded external lib: %s", libraryPath.c_str());
+  if (externalLocations_.find(imagePath) == externalLocations_.end()) {
+    auto* detailsDynCO = new DetailsDynCO();
+    auto status = detailsDynCO->loadCodeObject(imagePath.c_str());
+    if (status != hipSuccess) {
+      ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "failed to load external lib: %s", imagePath.c_str());
     }
-    else {
-      ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "failed to load external lib: %s", libraryPath.c_str());
-    }
+    externalLocations_.insert({imagePath, detailsDynCO});
   }
 
-  if (dynamicCOs_.empty()) {
-    ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "failed to load valid external libraries");
-    return;
-  }
-
-  for (auto& [_, symbolName] : substitutionTable_) {
-    for (auto* detailsDynCO: dynamicCOs_) {
-      auto functions = detailsDynCO->getFunctions();
-      for (auto& function : functions) {
-        auto& funcName = function.first;
-        auto* hipFunc = function.second;
-
-        if (symbolName == funcName) {
-          if (symbolsTable_.find(funcName) == symbolsTable_.end()) {
-            hipFunction_t hipSymbol;
-            auto status = hipFunc->getDynFunc(&hipSymbol, detailsDynCO->module());
-            if (status == hipSuccess) {
-              symbolsTable_.insert({funcName, reinterpret_cast<DeviceFunc*>(hipSymbol)->kernel()});
-            }
-            else {
-              ClPrint(amd::LOG_INFO, amd::LOG_ALWAYS, "failed to load external symbol: %s", symbolName.c_str());
-            }
-          }
-          else {
-            std::stringstream msg;
-            msg << "redefinition of symbol `" << symbolName << "` found. "
-                << "Falling back to the first symbol definition";
-            ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, msg.str().c_str());
-          }
-        }
+  auto* detailsDynCO = externalLocations_[imagePath];
+  auto functions = detailsDynCO->getFunctions();
+  for (auto& function : functions) {
+    auto& funcName = function.first;
+    auto* hipFunc = function.second;
+    if (symbolName == funcName) {
+      hipFunction_t hipSymbol;
+      auto status = hipFunc->getDynFunc(&hipSymbol, detailsDynCO->module());
+      if (status == hipSuccess) {
+        symbolsTable_.insert({funcName, reinterpret_cast<DeviceFunc*>(hipSymbol)->kernel()});
+        ClPrint(amd::LOG_INFO,
+                amd::LOG_ALWAYS,
+                "loaded external symbol `%s` from `%s`",
+                symbolName.c_str(),
+                imagePath.c_str());
+      }
+      else {
+        ClPrint(amd::LOG_ERROR,
+                amd::LOG_ALWAYS,
+                "failed to load external symbol `%s` from `%s`",
+                symbolName.c_str(),
+                imagePath.c_str());
       }
     }
-  }
-
-  if (substitutionTable_.empty()) {
-    ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "failed to populate external symbol table");
-  }
-  else {
-    device_id_ = ihipGetDevice();
-    ClPrint(amd::LOG_INFO, amd::LOG_ALWAYS, "external symbol table has been populated");
   }
 }
 };  // namespace hip
