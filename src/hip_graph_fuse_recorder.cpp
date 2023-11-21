@@ -4,8 +4,10 @@
 #include "utils/debug.hpp"
 #include <stdlib.h>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <filesystem>
+#include <yaml-cpp/emittermanip.h>
 #include <yaml-cpp/yaml.h>
 
 
@@ -37,12 +39,39 @@ namespace hip {
 bool GraphFuseRecorder::isRecordingStateQueried_{false};
 bool GraphFuseRecorder::isRecordingSwitchedOn_{false};
 std::string GraphFuseRecorder::tmpDirName_{};
-std::unordered_set<GraphFuseRecorder::ImageHandle, GraphFuseRecorder::ImageHash>
-    GraphFuseRecorder::imageCache_{};
-size_t GraphFuseRecorder::instanceCounter_{0};
+GraphFuseRecorder::ImageCacheType GraphFuseRecorder::imageCache_{};
+std::vector<std::string> GraphFuseRecorder::savedFusionConfigs_{};
+GraphFuseRecorder::CounterType GraphFuseRecorder::instanceCounter_{nullptr};
 
-GraphFuseRecorder::GraphFuseRecorder(hipGraph_t graph)
-    : graph_(graph), instanceId_(instanceCounter_++) {}
+GraphFuseRecorder::GraphFuseRecorder(hipGraph_t graph) : graph_(graph) {
+  amd::ScopedLock lock(fclock_);
+  if (GraphFuseRecorder::instanceCounter_ == nullptr) {
+    GraphFuseRecorder::instanceCounter_ = GraphFuseRecorder::CounterType{new size_t};
+    *(GraphFuseRecorder::instanceCounter_) = 0;
+  }
+  instanceId_ = (*GraphFuseRecorder::instanceCounter_)++;
+}
+
+void GraphFuseRecorder::Finalizer::operator()(size_t* instanceCounter) const {
+  std::filesystem::path path(GraphFuseRecorder::tmpDirName_);
+  YAML::Emitter out;
+  out << YAML::BeginSeq;
+  for (const auto& item : GraphFuseRecorder::savedFusionConfigs_) {
+    out << item;
+  }
+  out << YAML::EndSeq;
+
+  auto filePath = generateFilePath("config.yaml");
+  auto configFile = std::fstream(filePath.c_str(), std::ios_base::out);
+  if (configFile) {
+    configFile << out.c_str() << "\n";
+  } else {
+    std::stringstream msg;
+    msg << "failed to write yaml manifest file to `" << filePath.c_str() << "`";
+    ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, msg.str().c_str());
+  }
+  delete instanceCounter;
+}
 
 bool GraphFuseRecorder::isInputOk() {
   auto* env = getenv("AMD_FUSION_RECORDING");
@@ -73,6 +102,7 @@ bool GraphFuseRecorder::isInputOk() {
     auto config = YAML::LoadFile(configPathName);
     auto tmpDirName = config["tmp_dir_path"].as<std::string>();
     std::filesystem::path dirPath(tmpDirName);
+    dirPath /= "recording";
     if (!std::filesystem::exists(dirPath)) {
       auto isOk = std::filesystem::create_directories(dirPath);
       if (!isOk) {
@@ -80,8 +110,6 @@ bool GraphFuseRecorder::isInputOk() {
         return false;
       }
     }
-    dirPath /= "recording";
-    std::filesystem::create_directories(dirPath);
     GraphFuseRecorder::tmpDirName_ = dirPath.string();
   } catch (const YAML::ParserException& ex) {
     ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "error while parsing fusion config: %s", ex.what());
@@ -249,7 +277,7 @@ GraphFuseRecorder::KernelDescriptions GraphFuseRecorder::collectImages(
 
     if (imageCache_.find(handle) == imageCache_.end()) {
       const auto imageId = imageCache_.size();
-      handle.fileName_ = generateImagePath(imageId);
+      handle.fileName_ = GraphFuseRecorder::generateImagePath(imageId);
       imageCache_.insert(handle);
       saveImageToDisk(handle);
     }
@@ -313,20 +341,18 @@ void GraphFuseRecorder::saveFusionConfig(std::vector<KernelDescriptions>& groupD
       for (const auto argSize : description.argsSizes) {
         out << argSize;
       }
-      out << YAML::EndSeq;
-
-      out << YAML::EndMap;
+      out << YAML::EndSeq << YAML::EndMap;
     }
     out << YAML::EndSeq << YAML::EndMap;
   }
-  out << YAML::EndSeq;
-  out << YAML::EndMap;
+  out << YAML::EndSeq << YAML::EndMap;
 
-  auto fileName = std::string("config") + std::to_string(instanceId_) + std::string(".yaml");
-  auto configPath = generateFilePath(fileName);
+  auto fileName = std::string("graph") + std::to_string(instanceId_) + std::string(".yaml");
+  auto configPath = GraphFuseRecorder::generateFilePath(fileName);
   auto configFile = std::fstream(configPath.c_str(), std::ios_base::out);
   if (configFile) {
     configFile << out.c_str() << "\n";
+    GraphFuseRecorder::savedFusionConfigs_.push_back(fileName);
   } else {
     std::stringstream msg;
     msg << "failed to write yaml config file to `" << configPath.c_str() << "`";
@@ -335,12 +361,12 @@ void GraphFuseRecorder::saveFusionConfig(std::vector<KernelDescriptions>& groupD
 }
 
 std::string GraphFuseRecorder::generateFilePath(const std::string& name) {
-  auto path = std::filesystem::path(this->tmpDirName_) / std::filesystem::path(name);
+  auto path = std::filesystem::path(GraphFuseRecorder::tmpDirName_) / std::filesystem::path(name);
   return std::filesystem::weakly_canonical(path).string();
 }
 
 std::string GraphFuseRecorder::generateImagePath(size_t imageId) {
   auto name = std::string("img") + std::to_string(imageId) + std::string(".bin");
-  return generateFilePath(name);
+  return GraphFuseRecorder::generateFilePath(name);
 }
 }  // namespace hip

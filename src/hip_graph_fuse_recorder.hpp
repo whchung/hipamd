@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 #include <utility>
 #include <vector>
 #include "hip/hip_runtime.h"
@@ -44,6 +45,7 @@ class GraphFuseRecorder {
       return result;
     }
   };
+  using ImageCacheType = std::unordered_set<ImageHandle, ImageHash>;
 
   struct KernelDescription {
     std::string name{};
@@ -55,12 +57,13 @@ class GraphFuseRecorder {
 
 
   static bool isInputOk();
+  static std::string generateFilePath(const std::string& name);
+  static std::string generateImagePath(size_t imageId);
+
   bool findCandidates(const std::vector<Node>& nodes);
   KernelDescriptions collectImages(const std::vector<Node>& nodes);
   void saveImageToDisk(ImageHandle& imageHandle);
   void saveFusionConfig(std::vector<KernelDescriptions>& groupDescriptions);
-  std::string generateFilePath(const std::string& name);
-  std::string generateImagePath(size_t imageId);
 
   hipGraph_t graph_;
   std::vector<std::vector<Node>> fusionGroups_{};
@@ -70,7 +73,11 @@ class GraphFuseRecorder {
   static bool isRecordingStateQueried_;
   static bool isRecordingSwitchedOn_;
   static std::string tmpDirName_;
-  static std::unordered_set<ImageHandle, ImageHash> imageCache_;
-  static size_t instanceCounter_;
+  static ImageCacheType imageCache_;
+  static std::vector<std::string> savedFusionConfigs_;
+
+  struct Finalizer { void operator()(size_t*) const; };
+  using CounterType = std::unique_ptr<size_t, Finalizer>; 
+  static CounterType instanceCounter_;
 };
 }  // namespace hip
