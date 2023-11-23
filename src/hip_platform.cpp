@@ -21,6 +21,7 @@
 #include <hip/hip_runtime.h>
 #include <hip/texture_types.h>
 #include "hip/hip_runtime_api.h"
+#include "hip_code_object.hpp"
 #include "hip_platform.hpp"
 #include "hip_internal.hpp"
 #include "platform/kernel.hpp"
@@ -864,28 +865,29 @@ hipError_t PlatformState::getDynTexGlobalVar(textureReference* texRef, hipDevice
 }
 
 void PlatformState::loadExternalSymbol(const std::string& symbolName, const std::string imagePath) {
-  externalCOs_.load(symbolName, imagePath);
+  externalCOs_.load(symbolName, imagePath, statCO_);
 }
 
-std::unordered_map<std::string, amd::Kernel*> PlatformState::getExternalSymbolTable() {
+hip::ExternalCOs::SymbolTableType PlatformState::getExternalSymbolTable() {
   return externalCOs_.getExternalTable();
 }
 
-void PlatformState::initSemaphore() {
-  auto status = hipMalloc(&semaphore_, sizeof(unsigned int));
+bool PlatformState::initSemaphore() {
+  auto status = hipMalloc(&semaphore_, sizeof(size_t));
   if (status != hipSuccess) {
     ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "failed to allocate semaphore on the current device");
-    return;
+    return false;
   }
-  status = hipMemset(semaphore_, 0, sizeof(unsigned int));
+  status = hipMemset(semaphore_, 0, sizeof(size_t));
   if (status != hipSuccess) {
     ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "failed to set semaphore value on the current device");
-    return;
+    return false;
   }
   ClPrint(amd::LOG_INFO, amd::LOG_ALWAYS, "semaphore is set");
+  return true;
 }
 
-unsigned int* PlatformState::getSemaphore() {
+void* PlatformState::getSemaphore() {
   guarantee(semaphore_ != nullptr, "semaphore must be initialized");
   return semaphore_;
 }

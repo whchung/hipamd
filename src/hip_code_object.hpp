@@ -166,25 +166,28 @@ private:
 class ExternalCOs {
   amd::Monitor sclock_{"Guards External Code objects", true};
   public:
-  class DetailsDynCO : public DynCO {
-   public:
-    DetailsDynCO() {}
-    ~DetailsDynCO() {};
-    FatBinaryInfo* getFatBinaryInfo() { return fb_info_; }
-    std::unordered_map<std::string, Function*> getFunctions() { return functions_; }
-  };
+  using SymbolTableType = std::unordered_map<std::string, std::pair<void*, hip::Function*>>;
 
   ExternalCOs();
   virtual ~ExternalCOs();
-  void load(const std::string& symbolName, const std::string& imagePath);
-  auto getExternalTable() {
+  void load(const std::string& symbolName, const std::string& imagePath, StatCO& statCO);
+  SymbolTableType getExternalTable() {
     return symbolsTable_;
   }
 
   private:
+  struct ImageHandle {
+    amd::Os::FileDesc fdesc_{};
+    size_t fsize_{0};
+    const void* image_{nullptr};
+    FatBinaryInfo** modules_{};
+  };
+
   int device_id_;
-  std::unordered_map<std::string, DetailsDynCO*> externalLocations_{};
-  std::unordered_map<std::string, amd::Kernel*> symbolsTable_{};
+  SymbolTableType symbolsTable_{};
+  std::vector<std::pair<size_t*, hip::Function*>> funcHandles_{};
+
+  std::unordered_map<std::string, ImageHandle> imageHandles_{};
 };
 }; // namespace hip
 

@@ -866,52 +866,74 @@ hipError_t StatCO::initStatManagedVarDevicePtr(int deviceId) {
 ExternalCOs::ExternalCOs() : device_id_(ihipGetDevice()) {}
 ExternalCOs::~ExternalCOs() {
   amd::ScopedLock lock(sclock_);
-  for (auto& [location, dynamicCO] : externalLocations_) {
-    delete dynamicCO;
+  for (auto handle : funcHandles_) {
+    delete handle.first;
+    delete handle.second;
   }
-  externalLocations_.clear();
+  funcHandles_.clear();
+
+  for (auto& [_, handle] : imageHandles_) {
+    if (handle.fdesc_ > 0) {
+      if (handle.fsize_ && !amd::Os::MemoryUnmapFile(handle.image_, handle.fsize_)) {
+        guarantee(false, "Cannot unmap file");
+      }
+      if (!amd::Os::CloseFileHandle(handle.fdesc_)) {
+        guarantee(false, "Cannot close file");
+      }
+    }
+  }
+  imageHandles_.clear();
 }
 
-void ExternalCOs::load(const std::string& symbolName, const std::string& imagePath) {
+void ExternalCOs::load(const std::string& symbolName, const std::string& imagePath, StatCO& statCO) {
   amd::ScopedLock lock(sclock_);
+
   if (symbolsTable_.find(symbolName) != symbolsTable_.end()) {
-    ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "symbol %s has already been loaded", symbolName.c_str());
+    ClPrint(amd::LOG_INFO, amd::LOG_ALWAYS, "symbol %s has already been loaded", symbolName.c_str());
     return;
   }
 
-  if (externalLocations_.find(imagePath) == externalLocations_.end()) {
-    auto* detailsDynCO = new DetailsDynCO();
-    auto status = detailsDynCO->loadCodeObject(imagePath.c_str());
-    if (status != hipSuccess) {
-      ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "failed to load external lib: %s", imagePath.c_str());
+  if (imageHandles_.find(imagePath) == imageHandles_.end()) {
+    auto handle = ImageHandle{};
+    handle.fdesc_ = amd::Os::FDescInit();
+    handle.fsize_ = 0;
+
+    auto isOk = amd::Os::GetFileHandle(imagePath.c_str(), &handle.fdesc_, &handle.fsize_);
+    if (isOk) {
+      ClPrint(amd::LOG_INFO, amd::LOG_ALWAYS, "managed to read kernel file `%s`", imagePath.c_str());
     }
-    externalLocations_.insert({imagePath, detailsDynCO});
+    else {
+      ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "failed to read kernel file `%s`", imagePath.c_str());
+      return;
+    }
+
+    isOk = amd::Os::MemoryMapFileDesc(handle.fdesc_, handle.fsize_, 0, &handle.image_);
+    if (isOk) {
+      ClPrint(amd::LOG_INFO, amd::LOG_ALWAYS, "managed to map kernel file `%s`", imagePath.c_str());
+    }
+    else {
+      ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "failed to map kernel file `%s`", imagePath.c_str());
+      return;
+    }
+
+    handle.modules_ = statCO.addFatBinary(handle.image_, true);
+    imageHandles_.insert({imagePath, handle});
   }
 
-  auto* detailsDynCO = externalLocations_[imagePath];
-  auto functions = detailsDynCO->getFunctions();
-  for (auto& function : functions) {
-    auto& funcName = function.first;
-    auto* hipFunc = function.second;
-    if (symbolName == funcName) {
-      hipFunction_t hipSymbol;
-      auto status = hipFunc->getDynFunc(&hipSymbol, detailsDynCO->module());
-      if (status == hipSuccess) {
-        symbolsTable_.insert({funcName, reinterpret_cast<DeviceFunc*>(hipSymbol)->kernel()});
-        ClPrint(amd::LOG_INFO,
-                amd::LOG_ALWAYS,
-                "loaded external symbol `%s` from `%s`",
-                symbolName.c_str(),
-                imagePath.c_str());
-      }
-      else {
-        ClPrint(amd::LOG_ERROR,
-                amd::LOG_ALWAYS,
-                "failed to load external symbol `%s` from `%s`",
-                symbolName.c_str(),
-                imagePath.c_str());
-      }
-    }
+  auto& handle = imageHandles_.at(imagePath);
+  auto* hostHostFunc = new size_t;
+  hip::Function* hipFunc = new hip::Function(symbolName, handle.modules_);
+  auto status = statCO.registerStatFunction(hostHostFunc, hipFunc);
+
+  if (status == hipSuccess) {
+    ClPrint(amd::LOG_INFO, amd::LOG_ALWAYS, "managed to register `%s`", symbolName.c_str());
+    symbolsTable_.insert({symbolName, {reinterpret_cast<void*>(hostHostFunc), hipFunc}});
+    funcHandles_.push_back({hostHostFunc, hipFunc});
+  }
+  else {
+    ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS, "failed to register `%s` ", symbolName.c_str());
+    delete hostHostFunc;
+    delete hipFunc;
   }
 }
 };  // namespace hip

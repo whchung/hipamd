@@ -57,9 +57,9 @@ class PlatformState {
                                 size_t* size_ptr);
 
   void loadExternalSymbol(const std::string& symbolName, const std::string imagePath);
-  std::unordered_map<std::string, amd::Kernel*> getExternalSymbolTable();
-  void initSemaphore();
-  unsigned int* getSemaphore();
+  hip::ExternalCOs::SymbolTableType getExternalSymbolTable();
+  bool initSemaphore();
+  void* getSemaphore();
 
   /* Singleton instance */
   static PlatformState& instance() {
@@ -101,5 +101,5 @@ class PlatformState {
   bool initialized_{false};
   std::unordered_map<textureReference*, std::pair<hipModule_t, std::string>> texRef_map_;
 
-  unsigned int* semaphore_{};
+  void* semaphore_{};
 };
