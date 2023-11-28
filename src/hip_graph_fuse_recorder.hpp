@@ -70,14 +70,16 @@ class GraphFuseRecorder {
   std::vector<std::vector<size_t>> fusedExecutionOrder_{};
   size_t instanceId_{};
 
+  struct Finalizer {
+    void operator()(size_t*) const;
+  };
+  using CounterType = std::unique_ptr<size_t, Finalizer>;
+
+  static CounterType instanceCounter_;
   static bool isRecordingStateQueried_;
   static bool isRecordingSwitchedOn_;
   static std::string tmpDirName_;
   static ImageCacheType imageCache_;
   static std::vector<std::string> savedFusionConfigs_;
-
-  struct Finalizer { void operator()(size_t*) const; };
-  using CounterType = std::unique_ptr<size_t, Finalizer>; 
-  static CounterType instanceCounter_;
 };
 }  // namespace hip
